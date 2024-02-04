@@ -1,0 +1,305 @@
+---
+title: "Cyclistic's Data Exploring."
+author: "Omar Osman"
+date: "2024-02-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Set the working directory
+knitr::opts_knit$set(root.dir = 'C:/Users/Omar/Desktop/cyclistic_case_study')
+```
+## Goal of this analysis:
+
+#### The business task:  
+**How do annual members and casual riders use Cyclistic bikes differently?**\
+The objective of this analysis is to examine and compare the usage patterns of annual members and casual riders within the Cyclistic bike-share program.\
+By identifying differences in their behavior, we aim to provide insights that will inform the design of a targeted marketing strategy to convert casual riders into annual members.\
+The analysis will focus on key aspects such as trip duration, frequency of rides, popular routes, and any other relevant factors that distinguish the two user groups.
+
+
+
+
+
+**Where is your data located?**\
+Data originally can be found on this link:<https://divvy-tripdata.s3.amazonaws.com/index.html>\
+But we download it and stored it locally so we can analyse it.
+
+**How is the data organized?**\
+*We have 62 folders representing 9 years and 11 months*\
+Mostly they are consisting of CSV files, But not all all the CSV structure are identical\
+●We have 1 file for 2013.\
+●And from 2014 to 2017 we have 2 files for each year, each file contain 2 quarters.\
+●And for 2018 and 2019 we have 4 files for each year, a file for each quarter.\
+●And for 2020 we have file for the 1st quarter , then 9 files, a file for each month.\
+  starting from 2020-04 there is no data about members data (Gender,Birth year) or Bike ID\
+●And for 2021 and 2022 we have 12 files for each year, a file for each month.\
+●And for 2023 we have 11 files for each year, a file for each month from January to November.\
+
+
+**Are there issues with bias or credibility in this data? Does your data ROCCC?**\
+●Data is not biased, since it represent all the targeted audience (customers).\
+●Data is Reliable, Original, Comprehensive in some way, Current and Cited.
+
+
+**How are you addressing licensing, privacy, security, and accessibility?**\
+According to DIVVY bikes Data License Agreement, we can use the data in our case.
+
+License. Bikeshare hereby grants to you a non-exclusive, royalty-free, limited, perpetual license to access, reproduce,\ 
+analyze, copy, modify, distribute in your product or service and use the Data for any lawful purpose (“License”).
+
+**How did you verify the data’s integrity?**\
+By ensuring the accuracy, completeness, consistency, and validity of an organization's data.\
+1-check that all the CSV files have the same columns (Columns headers.\
+2-Check that the columns that have the same Columns headers contain same data.\
+3-Check the values of "member_casual" by checking the distinct values across all the tables. \
+4-Check the values of "rideable_type" by checking the distinct values across all the tables. \
+
+
+**How does it help you answer your question?**\
+By finding most popular time stations and ride type between customers and casuals, 
+we can answer How do annual members and casual riders use Cyclistic bikes differently?
+
+
+**Are there any problems with the data?**\
+We can investigate this by checking:
+1-Check that the dates of rows lie in the time period of the CSV.\
+2-Check that all start time is before end time.\
+3-Check how many row have no data at all about either the start or end station.\
+4-Check that all the ride_ids in each file is unique
+
+
+**What tools are you choosing?**\
+We will mainly use:\
+                    1-R (Rstudio)\
+
+
+**What data are we going to work with?**\
+I decided to work with the last year data only to be recent and not obsolete, since the structure of the CSV is nearly the same so it would be easier to deal with,\
+Also working with a data of a whole year can help find trends in the users behavior according to time frames,\
+and during my analysis of I found any Trend that I'm not sure about, I will return back to the data from the past years.\
+
+
+
+
+
+### Exploration Strategy.\
+
+
+                    
+**What steps have you taken to ensure that your data is clean?**\
+**Check for integrity:**\
+    1-check that all the CSV files have the same columns (Columns headers).\
+      and checking the consistent of values describing members and casuals through all the tables.\
+    2-Check that the columns that have the same Columns headers contain same data.\
+    3-Check the values of "member_casual" by checking the distinct values across all the tables. \
+    4-Check the values of "rideable_type" by checking the distinct values across all the tables. \
+**Check for data Errors:**\
+    1-Check that the dates of rows lie in the time period of the CSV.\
+    2-Check that all start time is before end time.\
+    3-Check if some rows have no data at all about either the start or end station.\
+    4-Check that all the ride_ids in each file is unique.\
+
+
+
+## Exploration:
+
+#### include usesd packeges\
+```{r include usesd packeges}
+suppressMessages(library(DBI))
+suppressMessages(library(dplyr))
+suppressMessages(library(RSQLite))
+suppressMessages(library(lubridate))
+```
+
+#### Create a list of all the use CSV files
+```{r Create a list of all the use CSV files}
+# Create a list of all the use CSV files
+csv_paths <- c(
+  "data/orginal_data/202212-divvy-tripdata.csv",
+  "data/orginal_data/202301-divvy-tripdata.csv",
+  "data/orginal_data/202302-divvy-tripdata.csv",
+  "data/orginal_data/202303-divvy-tripdata.csv",
+  "data/orginal_data/202304-divvy-tripdata.csv",
+  "data/orginal_data/202305-divvy-tripdata.csv",
+  "data/orginal_data/202306-divvy-tripdata.csv",
+  "data/orginal_data/202307-divvy-tripdata.csv",
+  "data/orginal_data/202308-divvy-tripdata.csv",
+  "data/orginal_data/202309-divvy-tripdata.csv",
+  "data/orginal_data/202310-divvy-tripdata.csv",
+  "data/orginal_data/202311-divvy-tripdata.csv"
+)
+```
+#### Load CSV files to dataframes
+```{r Create a dataframe for csv files.}
+# Load CSV files into a list of data frames
+csv_data_frames <- lapply(csv_paths, function(path) {
+  full_path <- file.path(getwd(), path)
+  cat("Loading file:", full_path, "\n")
+  read.csv(full_path)
+})
+```
+### Check for integrity:
+#### 1-check that all the CSV files have the same columns (Columns headers).\ 
+(by using:csv_common_columns function).\
+```{r checking Columns headers}
+source("functions/csv_common_columns.R")
+cat("all the CSV files have the same columns headers: ",csv_common_columns(csv_data_frames))
+```
+#### 2-Check that the columns that have the same Columns headers contain same data type.\
+```{r checking columns contents}
+# Iterate over the list of data frames with file paths
+for (i in seq_along(csv_data_frames)) {
+  path <- csv_paths[i]
+  cat("Reading file:", path, "\n")
+  print(head(csv_data_frames[[i]]))
+  cat("\n")
+}
+```
+**columns that have the same Columns headers contain same data.**\
+
+#### 3-Check the values of "member_casual" by checking the distinct values across all the tables. \
+For each data file print all unique values for member_casual.\
+```{r checking "member_casual" column}
+# Iterate over the list of data frames
+for (df in csv_data_frames) {
+  # Get unique values for the 'member_casual' column
+  unique_member_casual <- unique(df$member_casual)
+  
+  cat("Unique values for member_casual:", unique_member_casual, "\n")
+  cat("\n")
+}
+```
+**member_casual spellings is consistent in all data files and no record have no user type.**\
+
+
+
+#### 4-Check the values of "rideable_type" by checking the distinct values across all the tables. \
+for each data file print all unique values for rideable_type.\
+```{r checking "rideable_type." column}
+# Iterate over the list of data frames
+for (df in csv_data_frames) {
+  # Get unique values for the 'rideable_type' column
+  unique_rideable_types <- unique(df$rideable_type)
+  
+  cat("Unique values for rideable_type:", unique_rideable_types, "\n")
+  cat("\n")
+}
+```
+**rideable_type spellings is consistent in all data files and no record have no rideable_type**\
+even though data from(9/2023 , 10/2023 , 11/2023) don't have docked_bike.\
+
+
+### Check for data Errors:\
+#### 1-Check that the dates in each file lie in the time period of the CSV.
+```{r check max and min start_at}
+# Iterate over the list of data frames
+for (df in csv_data_frames) {
+  # Check if 'started_at' and 'ended_at' columns exist
+  if ("started_at" %in% colnames(df) && "ended_at" %in% colnames(df)) {
+    # Convert 'started_at' and 'ended_at' to datetime
+    df$start_time <- as.POSIXct(df$started_at, format="%Y-%m-%d %H:%M:%S", errors = "coerce")
+    df$end_time <- as.POSIXct(df$ended_at, format="%Y-%m-%d %H:%M:%S", errors = "coerce")
+    
+    # Extract time period from 'started_at' and 'ended_at' columns
+    time_period <- df %>%
+      summarise(
+        min_date = min(started_at, na.rm = TRUE),
+        max_date = max(started_at, na.rm = TRUE)
+      )
+    
+    # Print time period information
+    cat("Time Period: ", as.character(time_period$min_date), " to ", as.character(time_period$max_date), "\n")
+    cat("\n")
+  } else {
+    cat("Warning: 'started_at' and 'ended_at' columns not found in the dataset.\n\n")
+  }
+}
+```
+**All dates in each file lie in the time period of the CSV.**\
+
+#### 2-Check that all start time is before end time.\
+```{r check if start time is before end time}
+for (i in seq_along(csv_data_frames)) {
+  df <- csv_data_frames[[i]]
+  
+  # Check if started_at and ended_at columns exist
+  if ("started_at" %in% colnames(df) && "ended_at" %in% colnames(df)) {
+    # Count rows where ended_at is before started_at
+    num_rows_with_issue <- sum(df$ended_at < df$started_at, na.rm = TRUE)
+    
+    if (num_rows_with_issue > 0) {
+      cat("Warning:",csv_paths[i]," Having ", num_rows_with_issue, "rows have 'ended_at' before 'started_at'.\n\n")
+    }
+    else{cat(csv_paths[i], " all rows have 'started_at' before 'ended_at'.\n\n")}
+  } else {
+    cat("Warning: 'started_at' and 'ended_at' columns not found in the dataset.\n\n")
+  }
+}
+
+```
+**Some files have start time  after end time.**/
+
+
+#### 3-Check if some rows have no data at all about either the start or end station.\
+Print how many row have missing station data for both the start or end stations.
+```{r check empty stations data}
+# Iterate over the list of data frames
+for (df in csv_data_frames) {
+  condition1 <- (df$start_station_name == "") | (df$start_station_id == "") | ((df$start_lat == "") | (df$start_lng == ""))
+  condition2 <- (df$end_station_name == "") | (df$end_station_id == "") | ((df$end_lat == "") | (df$end_lng == ""))
+
+  # Count and print the number of rows satisfying either condition
+  total_rows <- nrow(df)
+  condition1_count <- sum(condition1)
+  condition2_count <- sum(condition2)
+  
+  cat("Number of rows with null or NA values in (start_station_name, start_station_id, and (start_lat or end_lat)):", condition1_count, "/", total_rows, "\n")
+  cat("Number of rows with null or NA values in (end_station_name, end_station_id, and (end_lat or end_lng)):", condition2_count, "/", total_rows, "\n")
+  cat("\n")
+}
+
+```
+**There are rows that have missing data about start and end station (either station name,id or coordinates).**\
+
+#### 4-Check that all the ride_ids in each file is unique.
+```{r check check_unique_ride_id}
+check_unique_ride_id <- function(csv_data_frames) {
+  result <- TRUE  # Assume initially that all ride_id columns have unique values
+  
+  for (df in csv_data_frames) {
+    # Check if ride_id column exists
+    if ("ride_id" %in% colnames(df)) {
+      # Check if ride_id column has unique values
+      if (!all(duplicated(df$ride_id) == FALSE)) {
+        result <- FALSE
+        cat("Warning: Duplicate ride_id values found in file\n")
+      }
+    } else {
+      result <- FALSE
+      cat("Warning: 'ride_id' column not found in file\n")
+    }
+  }
+  
+  cat("\nResult: All ride_id columns have unique values:", result, "\n")
+}
+
+# Call the function with the list of data frames
+check_unique_ride_id(csv_data_frames)
+```
+**All the ride_ids in each file is unique.**\
+
+
+## Exploration Conclusion\
+**1-Check for integrity:**\
+  a- all the CSV files have the same columns headers.\
+  b-the columns that have the same Columns headers contain same data type.\
+  c-member_casual spellings is consistent in all data files and no record have no user type.\
+  d-rideable_type spellings is consistent in all data files and no record have no rideable_type\
+  
+**2-Check for data Errors:**\
+  a-All dates in each file lie in the time period of the CSV.\
+  *b-Some files have start time  after end time.*\
+  *c-There are rows that have missing data about start and end station (either station name,id or coordinates).*\
+  d-All the ride_ids in each file is unique.

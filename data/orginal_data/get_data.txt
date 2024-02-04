@@ -1,0 +1,15 @@
+Data originally can be found on this link:https://divvy-tripdata.s3.amazonaws.com/index.html
+
+Data Used:
+  "data/orginal_data/202212-divvy-tripdata.csv",
+  "data/orginal_data/202301-divvy-tripdata.csv",
+  "data/orginal_data/202302-divvy-tripdata.csv",
+  "data/orginal_data/202303-divvy-tripdata.csv",
+  "data/orginal_data/202304-divvy-tripdata.csv",
+  "data/orginal_data/202305-divvy-tripdata.csv",
+  "data/orginal_data/202306-divvy-tripdata.csv",
+  "data/orginal_data/202307-divvy-tripdata.csv",
+  "data/orginal_data/202308-divvy-tripdata.csv",
+  "data/orginal_data/202309-divvy-tripdata.csv",
+  "data/orginal_data/202310-divvy-tripdata.csv",
+  "data/orginal_data/202311-divvy-tripdata.csv"

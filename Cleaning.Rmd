@@ -1,0 +1,1051 @@
+---
+title: "Cleaning Divvy Tripdata for a Whole Year"
+author: "Omar Osman"
+date: "2024-02-01"
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Set the working directory
+knitr::opts_knit$set(root.dir = 'C:/Users/Omar/Desktop/cyclistic_case_study')
+```
+# Introduction\
+
+This document outlines the process of cleaning Divvy trip data for a whole year.\
+
+## Cleaning Strategy\
+
+1. **Drop Corrupted Rows**\
+    a- Drop all rows with start time after end time.\
+    b- Drop rows with missing start or end station data.\
+
+2. **Convert `member_casual` Column**\
+    - Convert `member_casual` column into a boolean table called `Member` containing `TRUE` for member and `FALSE` for casual.\
+
+3. **Change `rideable_type` Column**\
+    - Change `rideable_type` column to `is_electric`, converting its type from text to boolean.\
+
+4. **Process Stations Data**\
+    a- Create station tables for each dataset and populate them with valid station data only.\
+    b- Merge stations with similar coordinates and names.\
+    c- Fill empty station names using station name and coordinates.\
+    d- Merge all station tables into one.\
+    e- Minimize Merged Table rows.\
+
+5. **Finalizing Data Processing**\
+    a- Drop `station_id`.\
+    b- Add new IDs columns to the main table.\
+    c- Drop stations columns from the original table.\
+
+6. **Drop Trips ID Column**\
+    - For analysis quickness, drop trips ID column since they are all unique.\
+
+7. **Create a new table and add each stations trip count to a new column alongside station id**\
+
+8. **Export our final tables as csv**\
+  
+##Cleaning:\
+#### include usesd packeges\
+```{r include usesd packeges}
+suppressMessages(library(DBI))
+suppressMessages(library(RSQLite))
+```
+
+## Data Preparation.\
+
+#### Create a list of all the used CSV files
+```{r Intialise csv files paths}
+csv_paths <- c(
+  "data/orginal_data/202212-divvy-tripdata.csv",
+  "data/orginal_data/202301-divvy-tripdata.csv",
+  "data/orginal_data/202302-divvy-tripdata.csv",
+  "data/orginal_data/202303-divvy-tripdata.csv",
+  "data/orginal_data/202304-divvy-tripdata.csv",
+  "data/orginal_data/202305-divvy-tripdata.csv",
+  "data/orginal_data/202306-divvy-tripdata.csv",
+  "data/orginal_data/202307-divvy-tripdata.csv",
+  "data/orginal_data/202308-divvy-tripdata.csv",
+  "data/orginal_data/202309-divvy-tripdata.csv",
+  "data/orginal_data/202310-divvy-tripdata.csv",
+  "data/orginal_data/202311-divvy-tripdata.csv"
+)
+```
+#### Create a sqlite data base with all the tables:
+```{r Creating SQLite database}
+add_csv_to_sqlite <- function(csv_paths, db_path) {
+  # Create a connection to the SQLite database
+  con <- dbConnect(RSQLite::SQLite(), dbname = db_path)
+  
+  for (path in csv_paths) {
+    # Extract the file name without the path
+    file_name <- basename(path)
+    
+    # Apply rules to generate a suitable table name
+    table_name <- gsub(".csv", "", file_name)
+    if (grepl("^[0-9]", table_name)) {
+      table_name <- paste0("T", table_name)
+    }
+    table_name <- gsub("-", "_", table_name)
+    # Read the CSV file into a data frame
+    df <- read.csv(path, na.strings = "")
+    
+    # Replace empty strings with NULL
+    df[df == ""] <- NA
+    
+    # Write the data frame to a new table in the database
+    dbWriteTable(con, table_name, df, overwrite = TRUE)
+    
+    # Print a message indicating that the table has been created
+    cat(paste0("Table '", table_name, "' has been created in the database.\n"))
+  }
+  
+  # Close the database connection
+  dbDisconnect(con)
+}
+``` 
+*Run the add_csv_to_sqlite function:*
+```{r run add_csv_to_sqlite function}
+# Specify the database path
+db_path <- "data/all_data.db"
+
+# Call the function with the CSV paths and the database path
+add_csv_to_sqlite(csv_paths, db_path)
+
+```
+
+## 1-Drop corrupted rows:\
+
+### 1-a-Drop all the rows that have Start time after End time:
+```{r Drop all the rows that have Start time after End time}
+drop_rows_and_report_db <- function(db_path) {
+  # Create a connection to the SQLite database
+  con <- dbConnect(RSQLite::SQLite(), dbname = db_path)
+  
+  # Get a list of table names in the database
+  table_names <- dbListTables(con)
+  
+  for (table_name in table_names) {
+    # Count the initial number of rows
+    initial_rows <- dbGetQuery(con, paste0('SELECT COUNT(*) FROM "', table_name, '";'))$`COUNT(*)`
+    
+    # Construct an SQL command to delete rows where started_at is after ended_at
+    sql_command <- paste0('DELETE FROM "', table_name, '" WHERE started_at > ended_at;')
+    
+    # Execute the SQL command
+    dbExecute(con, sql_command)
+    
+    # Count the final number of rows
+    final_rows <- dbGetQuery(con, paste0('SELECT COUNT(*) FROM "', table_name, '";'))$`COUNT(*)`
+    
+    # Calculate the number of rows dropped
+    rows_dropped <- initial_rows - final_rows
+    
+    # Print a message indicating the number of rows dropped for each table
+    cat(paste0("For table '", table_name, "', ", rows_dropped, " rows dropped due to started_at > ended_at.\n"))
+  }
+  
+  # Close the database connection
+  dbDisconnect(con)
+}
+```
+
+*Run the drop_rows_and_report_db function:*
+
+```{r Run the drop_rows_and_report_db function}
+# Specify the existing database path
+existing_db_path <- "data/all_data.db"
+
+# Call the function with the existing database path
+drop_rows_and_report_db(existing_db_path)
+```
+
+### 2-b-Drop rows that have no data about start or end station:
+
+```{r Drop rows that have no data about start or end station}
+drop_rows_if_null <- function(db_path) {
+  # Create a connection to the SQLite database
+  con <- dbConnect(RSQLite::SQLite(), dbname = db_path)
+  
+  # Get a list of table names in the database
+  table_names <- dbListTables(con)
+  
+  for (table_name in table_names) {
+    # Check if the table contains the required columns
+    if (all(c("end_station_name", "end_station_id", "end_lat", "end_lng", "start_station_name", "start_station_id", "start_lat", "start_lng") %in% dbListFields(con, table_name))) {
+      # Construct an SQL command to delete rows where any of the required columns are null
+      sql_command <- paste0('DELETE FROM "', table_name, '" WHERE (end_station_name IS NULL AND end_station_id IS NULL AND end_lat IS NULL AND end_lng IS NULL) OR (start_station_name IS NULL AND start_station_id IS NULL AND start_lat IS NULL AND start_lng IS NULL);')
+      
+      # Count the initial number of rows
+      initial_rows <- dbGetQuery(con, paste0('SELECT COUNT(*) FROM "', table_name, '";'))$`COUNT(*)`
+      
+      # Execute the SQL command
+      dbExecute(con, sql_command)
+      
+      # Count the final number of rows
+      final_rows <- dbGetQuery(con, paste0('SELECT COUNT(*) FROM "', table_name, '";'))$`COUNT(*)`
+      
+      # Calculate the number of rows dropped
+      rows_dropped <- initial_rows - final_rows
+      
+      # Print a message indicating the number of rows dropped for each table
+      cat(paste0("For table '", table_name, "', ", rows_dropped, " rows dropped due to null values.\n"))
+    } else {
+      # Print a message indicating that the table does not contain the required columns
+      cat(paste0("Table '", table_name, "' does not contain all the required columns.\n"))
+    }
+  }
+  
+  # Close the database connection
+  dbDisconnect(con)
+}
+```
+
+*runing drop_rows_if_null function.*
+
+```{r runing drop_rows_if_null function}
+# Specify the existing database path
+existing_db_path <- "data/all_data.db"
+
+# Call the function with the existing database path
+drop_rows_if_null(existing_db_path)
+```
+
+## 2-Convert `member_casual` Column.\
+#### Convert member_casual column into a boolean table called Member and contains TRUE instead of member and False instead of casual.
+```{r Convert member_casual column into a boolean table}
+convert_members_col_to_bool <- function(db_path) {
+  # Create a connection to the SQLite database
+  con <- dbConnect(RSQLite::SQLite(), dbname = db_path)
+  
+  # Get a list of table names in the database
+  table_names <- dbListTables(con)
+  i=0
+  for (table_name in table_names) {
+    # Check if the table contains the required columns
+    if (all(c("ride_id", "rideable_type", "member_casual","end_station_name", "end_station_id", "end_lat", "end_lng", "start_station_name", "start_station_id", "start_lat", "start_lng") %in% dbListFields(con, table_name))) {
+      
+      # Add a new boolean column 'is_member' based on 'member_casual'
+      dbExecute(con, paste0("
+        ALTER TABLE ", table_name, "
+        ADD COLUMN is_member TEXT;"))
+        
+      dbExecute(con, paste0("
+        UPDATE ", table_name, "
+        SET is_member = (CASE WHEN member_casual = 'member' THEN 'TRUE'
+                              WHEN member_casual = 'casual' THEN 'FALSE'
+                              ELSE NULL END);
+      "))
+        
+        
+      
+      # Drop the old column 'member_casual'
+      dbExecute(con, paste0("
+        ALTER TABLE ", table_name, "
+        DROP COLUMN member_casual;
+      "))
+      
+      #cat("Processed table:", table_name, "\n")
+      # Check if i is divisible by 3 to perform VACUUM operation
+      if (i %% 3 == 0) {
+        #cat("Vacuuming the database...\n")
+        dbExecute(con, "VACUUM")
+        #cat("Database vacuumed.\n")
+      }
+      i <- i + 1
+    }
+  }
+  cat("member_casual Column converted to Boolean")
+  # Disconnect from the database
+  dbDisconnect(con)
+}
+```
+
+*running convert_members_col_to_bool function.*
+
+```{r running convert_members_col_to_bool function.}
+convert_members_col_to_bool("data/all_data.db")
+```
+
+
+## 3-Change `rideable_type` Column.\
+#### Change rideable_type column to is_electric and change the type from Text to Boolean\
+**electric_bike to True, docked_bike and classic_bike to False**\
+I then decided to contact a Divvy data center representative. He politely followed back,\
+explaining to me that "there are two kinds of bikes: electric and non-electric.\
+The non-electric bikes are nowadays labelled as classic_bike and docked_bike.\
+Hence, if you see docked_bike and classic_bike in the same dataset, \
+know that you can categorize them together, as they are physically and functionally the same"\
+```{r Change `rideable_type` Column.}
+convert_rideable_col_to_bool <- function(db_path) {
+  # Create a connection to the SQLite database
+  con <- dbConnect(RSQLite::SQLite(), dbname = db_path)
+  
+  # Get a list of table names in the database
+  table_names <- dbListTables(con)
+  for (table_name in table_names) {
+    # Check if the table contains the required columns
+    if (all(c("ride_id", "rideable_type", "is_member","end_station_name", "end_station_id", "end_lat", "end_lng", "start_station_name", "start_station_id", "start_lat", "start_lng") %in% dbListFields(con, table_name))) {
+      
+      # Add a new boolean column 'is_electric' based on 'rideable_type'
+      dbExecute(con, paste0("
+        ALTER TABLE ", table_name, "
+        ADD COLUMN is_electric TEXT;"))
+        
+      dbExecute(con, paste0("
+        UPDATE ", table_name, "
+        SET is_electric = (CASE WHEN rideable_type = 'electric_bike' THEN 'TRUE'
+                                WHEN rideable_type =  'docked_bike'  THEN 'FALSE'
+                                WHEN rideable_type =  'classic_bike'  THEN 'FALSE'
+                              ELSE NULL END);
+      "))
+        
+        
+      
+      # Drop the old column 'rideable_type'
+      dbExecute(con, paste0("
+        ALTER TABLE ", table_name, "
+        DROP COLUMN rideable_type;
+      "))
+      
+      #cat("Processed table:", table_name, "\n")
+      # Check if i is divisible by 3 to perform VACUUM operation
+    }
+  }
+  
+  # Disconnect from the database
+  dbDisconnect(con)
+}
+```
+
+*runing convert_rideable_col_to_bool function.*
+
+```{r runing convert_rideable_col_to_bool function.}
+convert_rideable_col_to_bool("data/all_data.db")
+```
+
+
+## 4-Process Stations Data.\
+(Clean then Split it from the main tables while keeping only the ID of the stations):\
+
+### 4-a-Create station table for each table and populate it with valid station data only:\
+
+create_station_tables function :\
+  create a table named table_name+station for each data table:   \
+    this table will have 4 rows (station_id,station_id,station_lng,station_lat)\
+  The function will have 2 queries : 1 to select start station data and the other for the end station.\
+  Finally it will drop all non unique rows in stations tables.
+```{r create_station_tables function.}
+create_station_tables <- function(db_file_path) {
+  # Load SQLite database
+  con <- dbConnect(RSQLite::SQLite(), dbname = db_file_path)
+  
+  # Get list of table names
+  table_names <- dbListTables(con)
+  for (table_name in table_names) {
+    
+    if (all(c("end_station_name", "end_station_id", "end_lat", "end_lng", "start_station_name", "start_station_id", "start_lat", "start_lng") %in% dbListFields(con, table_name))) {
+    # Define new table name
+    new_table_name <- paste0("`", table_name, "_station`")
+
+    #Create a new table with 4 columns
+    create_table_query <- paste0(
+      "CREATE TABLE IF NOT EXISTS ", new_table_name, " AS ",
+      "SELECT start_station_id AS station_id, start_station_name AS station_name, start_lng AS station_lng, start_lat AS station_lat FROM [", table_name, "]",
+      "UNION ",
+      "SELECT end_station_id AS station_id, end_station_name AS station_name, end_lng AS station_lng, end_lat AS station_lat FROM [", table_name, "]"      )
+    dbExecute(con, create_table_query)
+    
+    count_query_before <- dbGetQuery(con, paste0('SELECT COUNT(*) FROM "', table_name, '";'))$`COUNT(*)`
+    
+    # Drop non-unique rows
+    drop_duplicates_query <- paste0(
+      "DELETE FROM ", new_table_name, " WHERE ROWID NOT IN ",
+      "(SELECT MIN(ROWID) FROM ", new_table_name, " GROUP BY station_id, station_name, station_lng, station_lat)"
+    )
+    dbExecute(con, drop_duplicates_query)
+
+    count_query_after <- dbGetQuery(con, paste0('SELECT COUNT(*) FROM "', table_name, '";'))$`COUNT(*)`
+    cat(table_name,"had :",count_query_before, " and now have:",count_query_after,"\n")
+
+    }
+  }
+  
+  # Disconnect from the database
+  dbDisconnect(con)
+}
+
+
+```
+
+*running create_station_tables function.*
+
+```{r running create_station_tables function.}
+create_station_tables("data/all_data.db")
+```
+
+### 4-b-Merge stations with similar coordinates and names.\
+Merge Same Stations Data.\
+
+*After creating the stations table we have found that:*\
+some coordinates are so close with same station name and id ,\
+so we will merge them\
+EX: 13276	Stockton Dr & Wrightwood Ave	-87.638737559	41.9313308\
+    13276	Stockton Dr & Wrightwood Ave	-87.638737321	41.93136704\
+    
+So we will create minimize_station_table function to process newly created stations table,\
+First it will create a minimized station table for each station table,\
+Second Remove rows with station_id only, station_name only, or both when there is a corresponding row with both\
+Then Remove duplicate rows based on station_id and station_name \
+Finally it will drop old station tables.
+```{r minimize_station_table function.}
+minimize_station_table <- function(db_file_path) {
+  # Load SQLite database
+  con <- dbConnect(RSQLite::SQLite(), dbname = db_file_path)
+  
+  # Get list of table names
+  table_names <- dbListTables(con)
+  
+  for (table_name in table_names) {
+    if (all(c("station_id", "station_name", "station_lng", "station_lat") %in% dbListFields(con, table_name))) {
+      # Define new table name
+      new_table_name <- paste0("`", table_name, "_minimized`")
+      
+      # Create a new table with the same structure
+      create_table_query <- paste0(
+        "CREATE TABLE IF NOT EXISTS ", new_table_name, " AS ",
+        "SELECT * FROM [", table_name, "]"
+      )
+      dbExecute(con, create_table_query)
+
+      # Remove rows with station_id only, station_name only, or both when there is a corresponding row with both
+      remove_partial_rows_query <- paste0(
+        "DELETE FROM ", new_table_name, " WHERE (station_id IS NOT NULL AND (station_name IS NULL) OR ",
+        "(station_name IS NOT NULL AND (station_id IS NULL))) AND EXISTS (",
+        "SELECT 1 FROM ", new_table_name, " t2 WHERE t2.station_id = ", new_table_name, ".station_id AND t2.station_name = ", new_table_name, ".station_name ",
+        "AND t2.station_id IS NOT NULL AND t2.station_name IS NOT NULL AND t2.station_lat IS NOT NULL AND t2.station_lng IS NOT NULL)"
+      )
+      dbExecute(con, remove_partial_rows_query)
+      # Remove duplicate rows based on station_id and station_name and taking the median coordinates of each group
+      remove_duplicates_query <- paste0(
+                                          "DELETE FROM ", new_table_name, " WHERE ROWID NOT IN (",
+                                          "  SELECT ROWID FROM (",
+                                          "    SELECT ROWID, station_id, station_name,",
+                                          "           AVG(station_lng) OVER (PARTITION BY station_id, station_name) AS median_lng,",
+                                          "           AVG(station_lat) OVER (PARTITION BY station_id, station_name) AS median_lat",
+                                          "    FROM ", new_table_name,
+                                          "  )",
+                                          "  WHERE ROWID IN (",
+                                          "    SELECT MIN(ROWID) FROM ", new_table_name, " GROUP BY station_id, station_name",
+                                          "  ))"
+                                        )
+
+
+      dbExecute(con, remove_duplicates_query)
+      # Drop old table if it exists
+      drop_table_query <- paste0(
+        "DROP TABLE  ", table_name
+      )
+      dbExecute(con, drop_table_query)
+    
+
+    }
+  }
+  
+  # Disconnect from the database
+  dbDisconnect(con)
+}
+
+
+
+```
+
+*runing minimize_station_table function.*
+
+```{r runing minimize_station_table function.}
+
+db_file_path <- "data/all_data.db"
+minimize_station_table(db_file_path)
+
+```
+
+
+### 4-c-Fill empty station names using station name and coordinates.\
+Fill empty stations names for starting and ending stations using station name and coordinates .\
+fill_station_names_exact_value -> is a function that will fill the name using id or exact coordinates.\
+```{r fill_station_names_exact_value function.}
+fill_station_names_exact_value <- function(databaseName, tableName, id_col_name, station_col_name, lat_col_name, lng_col_name) {
+  # Connect to the database
+  db <- dbConnect(SQLite(), databaseName)
+
+query <- paste0(
+  "UPDATE ", tableName,
+  " SET ", station_col_name, " = (",
+  " SELECT station_name ",
+  " FROM ",tableName,"_station_minimized ",
+  " WHERE (", tableName, ".", id_col_name, " = ",tableName,"_station_minimized.station_id) ",
+  "  OR (", tableName, ".", lat_col_name, " = ",tableName,"_station_minimized.station_lat AND ", tableName, ".", lng_col_name, " = ",tableName,"_station_minimized.station_lng)",
+  ")",
+  " WHERE ", station_col_name, " IS NULL"
+)
+
+# Execute the query
+dbExecute(db, query)
+  
+  # Disconnect from the database
+  dbDisconnect(db)
+}
+fill_station_names_approx_value <- function(databaseName, tableName, id_col_name, station_col_name, lat_col_name, lng_col_name,approx) {
+  # Connect to the database
+  db <- dbConnect(SQLite(), databaseName)
+  
+  # Construct the SQL query
+  query <- paste0(
+    "UPDATE ", tableName,
+    " SET ", station_col_name, " = (",
+    " SELECT station_name ",
+    " FROM ",tableName,"_station_minimized",
+    " WHERE (ABS(",tableName, ".", lat_col_name, " - ",tableName,"_station_minimized.station_lat )+ABS( ", tableName, ".", lng_col_name, " -",tableName,"_station_minimized.station_lng) <",approx,
+    ")) ",
+    "WHERE ", station_col_name, " IS NULL"
+  )
+
+  # Execute the query
+  dbExecute(db, query)
+  # Disconnect from the database
+  dbDisconnect(db)
+}
+```
+fill_station_names_approx_value -> will fill the name using approximate coordinates.\
+```{r complete_station_table_names function}
+
+complete_station_table_names <- function(database_location) {
+  con <- dbConnect(RSQLite::SQLite(), dbname = database_location)
+  
+  i <- 1
+  # Helper function to avoid repetition
+  fill_station_approx_values <- function(threshold) {
+    fill_station_names_approx_value(database_location, table_name, "start_station_id", "start_station_name", "start_lat", "start_lng", threshold)
+    fill_station_names_approx_value(database_location, table_name, "end_station_id", "end_station_name", "end_lat", "end_lng", threshold)
+  }
+  
+  # Get the names of all tables in the database
+  tables <- dbListTables(con)
+  
+  # Iterate over all tables
+  for (table_name in tables) {
+    # Get the column names of the current table
+    col_names <- dbListFields(con, table_name)
+
+    # Check if the current table has the given columns for start station
+    if ("start_station_name" %in% col_names & "start_station_id" %in% col_names & "start_lat" %in% col_names & "start_lng" %in% col_names) {
+      #cat("Processing table:", table_name, "start station\n")
+      fill_station_names_exact_value(database_location, table_name, "start_station_id", "start_station_name", "start_lat", "start_lng")
+
+      # Call the helper function with different threshold values
+      thresholds <- c(0.001, 0.005, 0.01, 0.05,0.1)
+      for (threshold in thresholds) {
+        fill_station_approx_values(threshold)
+      }
+    }
+    
+    # Check if the current table has the given columns for end station
+    if ("end_station_name" %in% col_names & "end_station_id" %in% col_names & "end_lat" %in% col_names & "end_lng" %in% col_names) {
+      #cat("Processing table:", table_name, "end station\n")
+      fill_station_names_exact_value(database_location, table_name, "end_station_id", "end_station_name", "end_lat", "end_lng")
+
+      # Call the helper function with different threshold values
+      thresholds <- c(0.001, 0.005, 0.01, 0.05,0.1)
+      for (threshold in thresholds) {
+        fill_station_approx_values(threshold)
+      }
+
+      # Count number of rows after modifications
+    }
+     if (i %% 3 == 0) {
+        #cat("Vacuuming the database...\n")
+        dbExecute(con, "VACUUM")
+        #cat("Database vacuumed.\n")
+      }
+      i <- i + 1
+  }
+  
+  # Close the database connection
+  dbDisconnect(con)
+}
+```
+
+*running fill_station_names_exact_value function.*
+
+```{r running fill_station_names_exact_value function.}
+complete_station_table_names("data/all_data.db")
+```
+  
+  
+
+
+  
+
+### 4-d-Merge all station tables into one.\  
+Merge all the tripdata_station_minimized columns in 1 table.\
+and drop all the tripdata_station_minimized tables. 
+```{r merge_and_drop_tables function}
+merge_and_drop_tables <- function(db_file_path) {
+  # Load SQLite database
+  con <- dbConnect(SQLite(), db_file_path)
+  
+  # Get list of table names
+  table_names <- dbListTables(con)
+  
+  # Create a list to store the names of minimized tables
+  minimized_tables <- c()
+  
+  for (table_name in table_names) {
+    if (all(c("station_id", "station_name", "station_lng", "station_lat") %in% dbListFields(con, table_name))) {
+      minimized_tables <- c(minimized_tables, table_name)
+    }
+  }
+  
+  # Merge all minimized tables into one
+  merge_tables_query <- paste0(
+    "CREATE TABLE IF NOT EXISTS \"merged_tripdata_station_minimized\" AS ",
+    "SELECT * FROM ", paste(sprintf('"%s"', minimized_tables), collapse = " UNION ALL SELECT * FROM ")
+  )
+  dbExecute(con, merge_tables_query)
+  
+  # Drop all minimized tables
+  for (minimized_table in minimized_tables) {
+    drop_table_query <- paste0("DROP TABLE IF EXISTS ", sprintf('"%s"', minimized_table))
+    dbExecute(con, drop_table_query)
+  }
+
+
+  # Disconnect from the database
+  dbDisconnect(con)
+}
+```
+  
+*runing merge_and_drop_tables function.*
+
+```{r runing merge_and_drop_tables function.}
+merge_and_drop_tables("data/all_data.db")
+
+```
+  
+  
+  
+### Minimize Merged Table rows
+```{r}
+minimize_merged_table <- function(db_file_path) {
+  # Load SQLite database
+  con <- dbConnect(SQLite(), db_file_path)
+
+  #Drop duplicated rows in merged table
+  drop_duplicates_query <- "DELETE FROM merged_tripdata_station_minimized WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM merged_tripdata_station_minimized  GROUP BY station_id, station_name, ROUND(station_lat, 3), ROUND(station_lng, 3))"
+  dbExecute(con, drop_duplicates_query)
+  drop_duplicates_query <- paste0(
+                                          "DELETE FROM  merged_tripdata_station_minimized WHERE ROWID NOT IN (",
+                                          "  SELECT ROWID FROM (",
+                                          "    SELECT ROWID, station_id, station_name,",
+                                          "           AVG(station_lng) OVER (PARTITION BY station_id, station_name) AS median_lng,",
+                                          "           AVG(station_lat) OVER (PARTITION BY station_id, station_name) AS median_lat",
+                                          "    FROM merged_tripdata_station_minimized",
+                                          "  )",
+                                          "  WHERE ROWID IN (",
+                                          "    SELECT MIN(ROWID) FROM merged_tripdata_station_minimized GROUP BY station_id,",
+                                          "station_name  ))"
+                                        )
+
+  # Remove rows with station_id only, station_name only, or both when there is a corresponding row with both
+  #delete rows from the merged_tripdata_station_minimized table that have incomplete data. Specifically, it deletes rows where either the station_id or station_name is not null but the other is null, or where either the station_lng or station_lat is null. Additionally, it deletes rows where there exists another row with the same station_id, station_name, and non-null station_lat and station_lng values 1.
+  remove_partial_rows_query <- paste0(
+    "DELETE FROM merged_tripdata_station_minimized
+    WHERE 
+    (station_id IS NOT NULL AND (station_name IS NULL) OR
+     (station_name IS NOT NULL AND (station_id IS NULL)) OR
+     (station_lng IS NULL OR (station_lat IS NULL)))
+    AND EXISTS (
+        SELECT 1 
+        FROM merged_tripdata_station_minimized t2 
+        WHERE 
+          t2.station_name = merged_tripdata_station_minimized.station_name 
+          AND t2.station_id IS NOT NULL 
+          AND t2.station_name IS NOT NULL 
+          AND t2.station_lat IS NOT NULL 
+          AND t2.station_lng IS NOT NULL
+    );
+"
+  )
+  dbExecute(con, remove_partial_rows_query)
+
+  # Remove rows with the same station_id, station_name, and small differences in lat/lng
+   remove_similar_rows_query <- paste0(
+                                      "CREATE TABLE stations AS
+                                        SELECT 
+                                            station_id,
+                                            station_name,
+                                            station_lng,
+                                            station_lat
+                                        FROM (
+                                            SELECT 
+                                                station_id,
+                                                station_name,
+                                                station_lng,
+                                                station_lat,
+                                                ROW_NUMBER() OVER (PARTITION BY station_id, station_name ORDER BY ROWID) as row_num
+                                            FROM merged_tripdata_station_minimized
+                                        ) AS ranked
+                                        WHERE row_num = 1;"
+                                        
+                                          )
+
+  dbExecute(con, remove_similar_rows_query)
+  # Remove rows with the same station_id, station_name, and small differences in lat/lng
+  drop_old_stations_table <- "DROP TABLE IF EXISTS merged_tripdata_station_minimized"
+  dbExecute(con, drop_old_stations_table)
+
+  #clean up null names
+  clean_up_null_names_query <- ("DELETE FROM stations WHERE station_name IS NULL")
+  dbExecute(con, clean_up_null_names_query)
+  # Disconnect from the database
+  dbDisconnect(con)
+}
+
+
+```
+
+```{r}
+minimize_merged_table("data/all_data.db")
+```
+
+## 5-Finalizing Data Processing.**\
+
+### 5-a- Drop rows that have null stations name either in (start station or end station)
+```{r}
+drop_null_station_names_rows <- function(db_file_path) {
+  # Load SQLite database
+  con <- dbConnect(RSQLite::SQLite(), dbname = db_file_path)
+  
+  # Get list of table names
+  table_names <- dbListTables(con)
+  for (table_name in table_names) {
+    
+    if (all(c("end_station_name", "end_station_id", "end_lat", "end_lng", "start_station_name", "start_station_id", "start_lat", "start_lng") %in% dbListFields(con, table_name))) {
+      sql_command <- paste0('DELETE FROM "', table_name, '" WHERE (end_station_name IS NULL OR start_station_name IS NULL);')
+
+      # Execute the SQL command
+      dbExecute(con, sql_command)
+      
+    }
+  }
+  dbDisconnect(con)
+}
+```
+```{r}
+drop_null_station_names_rows("data/all_data.db")
+```
+
+  
+  
+## Finalizing data processing after merging\
+
+### Drop station_id 
+```{r}
+delete_stations_id_column <- function(db_path) {
+  # Connect to the SQLite database
+  con <- dbConnect(SQLite(), dbname = db_path)
+  
+  dbExecute(con, "ALTER TABLE stations DROP COLUMN station_id")
+
+  # Disconnect from the database
+  dbDisconnect(con)
+}
+
+```
+```{r}
+delete_stations_id_column("data/all_data.db")
+```
+
+
+### add the new ids columns to the all_trips_data table
+```{r add_new_ids_columns function}
+add_new_ids_columns <- function(db_path) {
+  # Connect to the SQLite database
+  con <- dbConnect(SQLite(), dbname = db_path)
+
+  table_names <- dbListTables(con)
+  i <- 1
+  
+  for (table_name in table_names) {
+    
+    if (all(c("end_station_name", "end_station_id", "end_lat", "end_lng", "start_station_name", "start_station_id", "start_lat", "start_lng") %in% dbListFields(con, table_name))) {
+      # Step 1: Add new columns to the original table
+      dbExecute(con, paste0("ALTER TABLE ", table_name, " ADD COLUMN start_station_key_id INTEGER"))
+      dbExecute(con, paste0("ALTER TABLE ", table_name, " ADD COLUMN end_station_key_id INTEGER"))
+      
+      # Step 2: Update the new columns based on the mapping with the stations table
+      dbExecute(con, paste0("
+                 UPDATE ", table_name, "
+                 SET start_station_key_id = (SELECT rowid FROM stations WHERE stations.station_name = ", table_name, ".start_station_name),
+                     end_station_key_id = (SELECT rowid FROM stations WHERE stations.station_name = ", table_name, ".end_station_name)
+                 "))
+      
+      #cat("Processing table: ", table_name, " finished\n")
+      
+      # Check if i is divisible by 3 to perform VACUUM operation
+      if (i %% 3 == 0) {
+        #cat("Vacuuming the database...\n")
+        dbExecute(con, "VACUUM")
+        #cat("Database vacuumed.\n")
+      }
+      i <- i + 1
+    }
+  }
+  
+  # Disconnect from the database
+  dbDisconnect(con)
+}
+
+
+```
+ 
+*runing add_new_ids_columns function.*
+
+```{r runing add_new_ids_columns function.}
+add_new_ids_columns("data/all_data.db")
+```
+
+### Drop stations columns from the original table after it was already refrenced using new id
+```{r function drop_trips_columns.}
+drop_trips_columns <- function(db_path){
+  # Connect to the SQLite database
+  con <- dbConnect(SQLite(), dbname = db_path)
+
+  table_names <- dbListTables(con)
+  i <- 1
+  
+  for (table_name in table_names) {
+    
+    if (all(c("end_station_name", "end_station_id", "end_lat", "end_lng", "start_station_name", "start_station_id", "start_lat", "start_lng") %in% dbListFields(con, table_name))) {
+      # List of columns to drop
+      columns_to_drop <- c("end_station_name", "end_station_id", "end_lat", "end_lng", 
+                            "start_station_name", "start_station_id", "start_lat", "start_lng")
+    
+      # Loop through each column to drop
+      for (column_name in columns_to_drop) {
+        query <- paste0("ALTER TABLE ", table_name, "  DROP COLUMN ", column_name)
+        dbExecute(con, query)}
+
+      #cat("Processing table: ", table_name, " finished\n")
+      
+      # Check if i is divisible by 3 to perform VACUUM operation
+      if (i %% 3 == 0) {
+        #cat("Vacuuming the database...\n")
+        dbExecute(con, "VACUUM")
+        #cat("Database vacuumed.\n")
+      }
+      i <- i + 1
+    }
+  }
+
+  # Disconnect from the database
+  dbDisconnect(con)
+}
+```
+
+*running function drop_trips_columns.*
+
+```{r running function drop_trips_columns.}
+drop_trips_columns("data/all_data.db")
+```
+
+
+## Merge all data tables\
+
+```{r merge_data_tables function.}
+merge_data_tables <- function(db_file_path) {
+  new_table_name <- "all_trips_data"
+  
+  # Load SQLite database
+  con <- dbConnect(RSQLite::SQLite(), dbname = db_file_path)
+
+  # Get a list of all tables in the database
+  all_tables <- dbListTables(con)
+
+  # Initialize a vector to store the tables that meet the criteria
+  valid_tables <- character(0)
+
+  # Iterate over all tables
+  for (table_name in all_tables) {
+    # Check if the specified columns exist in the table
+    required_columns <- c("ride_id", "is_electric")
+
+    if (all(required_columns %in% dbListFields(con, table_name))) {
+      # If columns exist, add the table to the valid_tables vector
+      valid_tables <- c(valid_tables, table_name)
+    }
+  }
+
+  # Check if any valid tables were found
+  if (length(valid_tables) > 0) {
+    # Create a new table and insert data from the valid tables
+    select_queries <- lapply(valid_tables, function(table) {
+      paste("SELECT * FROM", table)
+    })
+    
+    query <- paste0("CREATE TABLE ", new_table_name, " AS ", 
+                    paste(select_queries, collapse = " UNION ALL "))
+    dbExecute(con, query)
+    
+    cat("Tables merged successfully. New table created:", new_table_name, "\n")
+    # Drop old tables
+    for (table in valid_tables) {
+      dbExecute(con, paste0("DROP TABLE ", table))
+      cat("Table dropped:", table, "\n")
+    }
+  } else {
+    cat("No tables with the required columns found.\n")
+  }
+  cat("Vacuuming the database...\n")
+  dbExecute(con, "VACUUM")
+  cat("Database vacuumed.\n")
+  # Close the database connection
+  dbDisconnect(con)
+}
+```
+
+*running merge_data_tables function.*
+
+```{r running merge_data_tables function.}
+merge_data_tables("data/all_data.db")
+```
+### Check that all the trips ID are unique.\
+
+```{r Check_Id_uniqueness function.}
+Check_Id_uniqueness <- function(db_file_path) {
+
+  # Load SQLite database
+  con <- dbConnect(RSQLite::SQLite(), dbname = db_file_path)
+  query <- ("SELECT ride_id
+            FROM all_trips_data
+            GROUP BY ride_id
+            HAVING COUNT(ride_id) > 1;")
+  print(dbGetQuery(con, query))
+  
+  dbDisconnect(con)
+}
+```
+
+*runing Check_Id_uniqueness function.*
+
+```{r runing Check_Id_uniqueness function.}
+Check_Id_uniqueness("data/all_data.db")
+```
+
+## 6- Drop Trips ID Column.\
+**Since all the  trips IDs are unique and if we needed to use an id we can use rowid**\
+```{r drop_ride_id_col Function}
+drop_ride_id_col <- function(db_file_path) {
+
+  # Load SQLite database
+  con <- dbConnect(RSQLite::SQLite(), dbname = db_file_path)
+  query <- ("ALTER TABLE all_trips_data DROP COLUMN ride_id")
+  dbExecute(con, query)
+  cat("Vacuuming the database...\n")
+  dbExecute(con, "VACUUM")
+  cat("Database vacuumed.\n")
+  dbDisconnect(con)
+}
+```
+
+*running drop_ride_id_col Function.* 
+
+```{r running drop_ride_id_col Function}
+drop_ride_id_col("data/all_data.db")
+```
+## 7-Create a new table and add each stations trip count to a new column alongside station id.\
+*since its comlicated to count trips count in tableau.*\
+```{r create_trips_count_table function.}
+create_trips_count_table <- function(db_file_path) {
+  con <- dbConnect(RSQLite::SQLite(), dbname = db_file_path)
+  
+  create_StationTotalTrips_table_query <- "CREATE TABLE IF NOT EXISTS StationTotalTrips (
+    StationRowId INTEGER,
+    TotalTrips INTEGER
+  );"
+  dbExecute(con, create_StationTotalTrips_table_query)
+  
+  fill_StationTotalTrips_table_query <- "INSERT INTO StationTotalTrips (StationRowId, TotalTrips)
+    SELECT
+      s.rowid AS StationRowId,
+      COALESCE(dep.Departures, 0) + COALESCE(arr.Arrivals, 0) AS TotalTrips
+    FROM
+      stations s
+    LEFT JOIN
+      (SELECT
+        start_station_key_id,
+        COUNT(*) AS Departures
+      FROM
+        all_trips_data
+      GROUP BY
+        start_station_key_id) dep ON s.rowid = dep.start_station_key_id
+    LEFT JOIN
+      (SELECT
+        end_station_key_id,
+        COUNT(*) AS Arrivals
+      FROM
+        all_trips_data
+      GROUP BY
+        end_station_key_id) arr ON s.rowid = arr.end_station_key_id;"
+  
+  dbExecute(con, fill_StationTotalTrips_table_query)
+  
+  dbDisconnect(con)
+  
+  cat("StationTotalTrips table has been created and filled with data.\n")
+}
+```
+
+*running create_trips_count_table function.*
+
+```{r running create_trips_count_table function.}
+create_trips_count_table("data/all_data.db")
+```
+## 8-Export our final tables as csv.\
+*so we can use them in tableau public.*\
+```{r export_tables_as_csv function.}
+export_tables_as_csv <- function(db_file_path, output_dir) {
+  con <- dbConnect(RSQLite::SQLite(), dbname = db_file_path)
+  
+  # Export StationTotalTrips table
+  station_total_trips <- dbGetQuery(con, "SELECT * FROM StationTotalTrips")
+  write.csv(station_total_trips, file.path(output_dir, "StationTotalTrips.csv"), row.names = FALSE)
+  cat("StationTotalTrips table exported successfully.\n ")
+  
+  # Export all_trips_data table
+  all_trips_data <- dbGetQuery(con, "SELECT * FROM all_trips_data")
+  write.csv(all_trips_data, file.path(output_dir, "all_trips_data.csv"), row.names = FALSE)
+  cat("all_trips_data table exported successfully.\n ")
+  
+  # Export stations table
+  stations <- dbGetQuery(con, "SELECT rowid, * FROM stations")
+  write.csv(stations, file.path(output_dir, "stations.csv"), row.names = FALSE)
+  cat("stations table exported successfully.\n ")
+  
+  #Vacuuming the database.
+  dbExecute(con, "VACUUM")
+  cat("Database vacuumed.\n")
+  
+  dbDisconnect(con)
+  
+}
+
+```
+
+*running export_tables_as_csv function.*\
+
+```{r running export_tables_as_csv function.}
+export_tables_as_csv("data/all_data.db","data/final_csv_files/")
+```
+
